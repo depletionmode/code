@@ -1,6 +1,6 @@
-From 10bbc91c70333546e5b882fe987464d1518ef594 Mon Sep 17 00:00:00 2001
+From 31a5b12f9000f7e11ad4a03f297c17b58ccdc9bc Mon Sep 17 00:00:00 2001
 From: David Kaplan <david@2of1.org>
-Date: Thu, 22 Jul 2010 17:24:51 +0300
+Date: Fri, 23 Jul 2010 10:43:50 +0300
 Subject: [PATCH] Direct2D video output module
 
 Adds support for the D2D API on Win7/Vista SP2 with Platform Update
@@ -10,13 +10,13 @@ Requires d2d1 contrib headers
  modules/video_output/msw/Modules.am |    8 +
  modules/video_output/msw/common.c   |    9 +-
  modules/video_output/msw/common.h   |    9 +
- modules/video_output/msw/direct2d.c |  399 +++++++++++++++++++++++++++++++++++
+ modules/video_output/msw/direct2d.c |  422 +++++++++++++++++++++++++++++++++++
  modules/video_output/msw/events.c   |    3 +
- 6 files changed, 442 insertions(+), 3 deletions(-)
+ 6 files changed, 465 insertions(+), 3 deletions(-)
  create mode 100644 modules/video_output/msw/direct2d.c
 
 diff --git a/configure.ac b/configure.ac
-index 8a8701e..221f7c4 100644
+index 8a8701e..738f631 100644
 --- a/configure.ac
 +++ b/configure.ac
 @@ -3490,6 +3490,23 @@ then
@@ -26,7 +26,7 @@ index 8a8701e..221f7c4 100644
 +dnl  Windows Direct2D plugin
 +dnl
 +AC_ARG_ENABLE(direct2d,
-+  [  --enable-direct2d         Win32 Direct2D support (default enabled on Win32)])
++  [  --enable-direct2d         Win7/VistaPU Direct2D support (default auto on Win32)])
 +if test "${enable_direct2d}" != "no"; then
 +  if test "${SYS}" = "mingw32" -o "${SYS}" = "mingwce"
 +  then
@@ -34,7 +34,7 @@ index 8a8701e..221f7c4 100644
 +      [
 +        VLC_ADD_PLUGIN([direct2d])
 +        VLC_ADD_LIBS([direct2d],[-lgdi32 -lole32])
-+      ], [AC_MSG_ERROR([Cannot find Direct2D headers!])]
++      ], [AC_MSG_WARN([Cannot find Direct2D headers!])]
 +    )
 +  fi
 +fi
@@ -101,7 +101,7 @@ index 5704d5c..fddbd3d 100644
      rect_src_clipped.left &= ~1;
      rect_src_clipped.right &= ~1;
 diff --git a/modules/video_output/msw/common.h b/modules/video_output/msw/common.h
-index e023ef4..db6a2d8 100644
+index e023ef4..125fd65 100644
 --- a/modules/video_output/msw/common.h
 +++ b/modules/video_output/msw/common.h
 @@ -157,6 +157,15 @@ struct vout_display_sys_t
@@ -109,12 +109,12 @@ index e023ef4..db6a2d8 100644
  #endif
  
 +#ifdef MODULE_NAME_IS_direct2d
-+    HINSTANCE              h_d2_dll;            /* handle of the opened d3d9 dll */
-+    FLOAT                  f_d2_dpi_x;                                  /* DPI x */
-+    FLOAT                  f_d2_dpi_y;                                  /* DPI y */
-+    ID2D1Factory           *p_d2_factory;                         /* D2D factory */
-+    ID2D1HwndRenderTarget  *p_d2_render_target;          /* D2D rendering target */
-+    ID2D1Bitmap            *p_d2_bitmap;                            /* D2 bitmap */
++    HINSTANCE              d2_dll;            /* handle of the opened d2d1 dll */
++    FLOAT                  d2_dpi_x;                                  /* DPI x */
++    FLOAT                  d2_dpi_y;                                  /* DPI y */
++    ID2D1Factory           *d2_factory;                         /* D2D factory */
++    ID2D1HwndRenderTarget  *d2_render_target;          /* D2D rendering target */
++    ID2D1Bitmap            *d2_bitmap;                            /* D2 bitmap */
 +#endif
 +
  #ifdef MODULE_NAME_IS_direct3d
@@ -122,12 +122,12 @@ index e023ef4..db6a2d8 100644
      /* show video on desktop window ? */
 diff --git a/modules/video_output/msw/direct2d.c b/modules/video_output/msw/direct2d.c
 new file mode 100644
-index 0000000..c04cdf6
+index 0000000..880c240
 --- /dev/null
 +++ b/modules/video_output/msw/direct2d.c
-@@ -0,0 +1,399 @@
+@@ -0,0 +1,422 @@
 +/*****************************************************************************
-+ * direct2d.c : Direct2D video output plugin for vlc (Win7/Vista SP2 PF update)
++ * direct2d.c : Direct2D video output plugin for vlc (Win7/Vista SP2 PF Update)
 + *****************************************************************************
 + * Copyright (C) 2010 VideoLAN and AUTHORS
 + * $Id$
@@ -173,7 +173,7 @@ index 0000000..c04cdf6
 +#include <initguid.h>
 +#undef GUID_EXT
 +#define GUID_EXT
-+DEFINE_GUID(IID_ID2D1Factory, 102048327, 28496, 18010, 146, 69, 17, 139, 253, 59, 96, 7);
++DEFINE_GUID(IID_ID2D1Factory, 0x6152247, 0x6f50, 0x465a, 0x92, 0x45, 0x11, 0x8b, 0xfd, 0x3b, 0x60, 0x7);
 +
 +#ifndef WS_NONAVDONEBUTTON
 +#   define WS_NONAVDONEBUTTON 0
@@ -208,9 +208,9 @@ index 0000000..c04cdf6
 +static int            Control(vout_display_t *, int, va_list);
 +static void           Manage (vout_display_t *);
 +
-+void D2D_CreateRenderTarget(vout_display_t *vd);
-+void D2D_ResizeRenderTarget(vout_display_t *vd);
-+void D2D_DestroyRenderTarget(vout_display_t *vd);
++static int      D2D_CreateRenderTarget(vout_display_t *vd);
++static void     D2D_ResizeRenderTarget(vout_display_t *vd);
++static void     D2D_DestroyRenderTarget(vout_display_t *vd);
 +
 +/**
 + * Initialises Direct2D vout module
@@ -224,11 +224,10 @@ index 0000000..c04cdf6
 +    if (!sys)
 +        return VLC_ENOMEM;
 +
-+    if (CommonInit(vd))
-+        goto error;
++    sys->d2_render_target = NULL;
 +
-+    sys->h_d2_dll = LoadLibrary(TEXT("D2D1.DLL"));
-+    if (!sys->h_d2_dll) {
++    sys->d2_dll = LoadLibrary(TEXT("D2D1.DLL"));
++    if (!sys->d2_dll) {
 +        if (object->b_force)
 +            msg_Err(vd, "Cannot load D2D1.DLL, aborting");
 +        goto error;
@@ -238,14 +237,14 @@ index 0000000..c04cdf6
 +        D2D1_DEBUG_LEVEL_NONE
 +    };
 +
-+    HRESULT (WINAPI *_D2D1CreateFactory)( D2D1_FACTORY_TYPE, REFIID,
-+        const D2D1_FACTORY_OPTIONS *, void ** );
++    HRESULT (WINAPI *D2D1CreateFactory)(D2D1_FACTORY_TYPE, REFIID,
++                                        const D2D1_FACTORY_OPTIONS *,
++                                        void **);
 +
-+    _D2D1CreateFactory = (void *)GetProcAddress(sys->h_d2_dll,
-+        TEXT("D2D1CreateFactory"));
-+    if (!_D2D1CreateFactory) {
-+        if (object->b_force)
-+            msg_Err(vd,
++    D2D1CreateFactory = (void *)GetProcAddress(sys->d2_dll,
++                                               TEXT("D2D1CreateFactory"));
++    if (!D2D1CreateFactory) {
++        msg_Err(vd,
 +                "Cannot locate reference to a D2D1CreateFactory ABI in D2D1.DLL");
 +        goto error;
 +    }
@@ -254,17 +253,21 @@ index 0000000..c04cdf6
 +    msg_Dbg(vd, "D2D1.DLL loaded");
 +#endif
 +
-+    HRESULT hr = _D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED,
-+        (REFIID)&IID_ID2D1Factory, &fo, (void **)&sys->p_d2_factory);
++    HRESULT hr = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED,
++                                   (REFIID)&IID_ID2D1Factory,
++                                   &fo,
++                                   (void **)&sys->d2_factory);
 +    if (hr != S_OK) {
-+        if (object->b_force)
-+            msg_Err(vd, "Cannot create Direct2D factory (hr = 0x%x)!",
-+                (uint32_t)hr);
++        msg_Err(vd, "Cannot create Direct2D factory (hr = 0x%x)!",
++                (unsigned)hr);
 +        goto error;
 +    }
 +
-+    sys->p_d2_render_target = NULL;
-+    D2D_CreateRenderTarget(vd);
++    if (CommonInit(vd))
++        goto error;
++
++    if (D2D_CreateRenderTarget(vd) != VLC_SUCCESS)
++        goto error;
 +
 +    vout_display_info_t info = vd->info;
 +    info.is_slow              = false;
@@ -273,19 +276,10 @@ index 0000000..c04cdf6
 +    info.has_pictures_invalid = true;
 +    vd->info = info;
 +
-+    RECT rc;
-+    GetClientRect(sys->hvideownd, &rc);
-+    D2D1_SIZE_U size = {
-+        rc.right - rc.left,
-+        rc.bottom - rc.top
-+    };
-+
 +    vd->fmt.i_chroma = VLC_CODEC_RGB32; /* masks change this to BGR32 for ID2D1Bitmap */
 +    vd->fmt.i_rmask  = 0x000000ff;
 +    vd->fmt.i_gmask  = 0x0000ff00;
-+    vd->fmt.i_bmask  = 0x00000000; /* todo - fix this (should be 0x00ff0000) */
-+    vd->fmt.i_width  = size.width;
-+    vd->fmt.i_height = size.height;
++    vd->fmt.i_bmask  = 0x00000000;
 +
 +    vd->pool    = Pool;
 +    vd->prepare = Prepare;
@@ -347,19 +341,28 @@ index 0000000..c04cdf6
 +{
 +    vout_display_sys_t *sys = vd->sys;
 +
-+    if (sys->p_d2_render_target && sys->p_d2_bitmap)
++    if (sys->d2_render_target && sys->d2_bitmap)
 +    {
-+        UINT32 pitch = vd->fmt.i_width * 4;
++        /* This seems unnecessary
++        D2D1_RECT_U r_src = {
++            sys->rect_src_clipped.left,
++            sys->rect_src_clipped.top,
++            sys->rect_src_clipped.right,
++            sys->rect_src_clipped.bottom
++        };
++        */
 +
-+        HRESULT hr = ID2D1Bitmap_CopyFromMemory(sys->p_d2_bitmap, NULL,
-+            picture->p[0].p_pixels, pitch);
-+        if( hr != S_OK )
++        HRESULT hr = ID2D1Bitmap_CopyFromMemory(sys->d2_bitmap,
++                                                NULL /*&r_src*/,
++                                                picture->p[0].p_pixels,
++                                                picture->p[0].i_pitch);
++        if (hr != S_OK)
 +            msg_Err(vd, "Failed to copy bitmap memory (hr = 0x%x)!",
-+                (uint32_t)hr);
++                    (unsigned)hr);
 +
 +#ifndef NDEBUG
 +        /*msg_Dbg(vd, "Bitmap dbg: target = %p, pitch = %d, bitmap = %p",
-+            sys->p_d2_render_target, pitch, sys->p_d2_bitmap);*/
++                sys->d2_render_target, pitch, sys->d2_bitmap);*/
 +#endif
 +    }
 +}
@@ -371,19 +374,24 @@ index 0000000..c04cdf6
 +{
 +    vout_display_sys_t *sys = vd->sys;
 +
-+    D2D1_RECT_F rc = {
++    D2D1_RECT_F r_dest = {
 +        sys->rect_dest.left,
 +        sys->rect_dest.top,
 +        sys->rect_dest.right,
 +        sys->rect_dest.bottom
 +    };
 +
-+    if (sys->p_d2_render_target && sys->p_d2_bitmap) {
-+        ID2D1HwndRenderTarget_BeginDraw(sys->p_d2_render_target);
-+        ID2D1HwndRenderTarget_DrawBitmap(sys->p_d2_render_target,
-+            sys->p_d2_bitmap, &rc, 1.0f,
-+            D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, NULL);
-+        ID2D1HwndRenderTarget_EndDraw(sys->p_d2_render_target, NULL, NULL);
++    if (sys->d2_render_target && sys->d2_bitmap) {
++        ID2D1HwndRenderTarget_BeginDraw(sys->d2_render_target);
++
++        ID2D1HwndRenderTarget_DrawBitmap(sys->d2_render_target,
++                                         sys->d2_bitmap,
++                                         &r_dest,
++                                         1.0f,
++                                         D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
++                                         NULL);
++
++        ID2D1HwndRenderTarget_EndDraw(sys->d2_render_target, NULL, NULL);
 +    }
 +
 +    picture_Release(picture);
@@ -416,32 +424,13 @@ index 0000000..c04cdf6
 +}
 +
 +/**
-+ * Resizes a ID2D1HWndRenderTarget
-+ */
-+void D2D_ResizeRenderTarget(vout_display_t *vd)
-+{
-+    vout_display_sys_t *sys = vd->sys;
-+
-+    D2D1_SIZE_U size = {
-+        sys->rect_dest.right - sys->rect_dest.left,
-+        sys->rect_dest.bottom - sys->rect_dest.top
-+    };
-+
-+    HRESULT hr  = ID2D1HwndRenderTarget_Resize(sys->p_d2_render_target, &size);
-+    if(hr != S_OK) {
-+        msg_Err(vd, "Cannot resize render target (width = %d, height = %d, hr = 0x%x)!",
-+            size.width, size.height, (uint32_t)hr);
-+
-+        D2D_DestroyRenderTarget(vd);
-+    }
-+}
-+
-+/**
 + * Creates a ID2D1HwndRenderTarget and associated ID2D1Bitmap
 + */
-+void D2D_CreateRenderTarget(vout_display_t *vd)
++static int D2D_CreateRenderTarget(vout_display_t *vd)
 +{
 +    vout_display_sys_t *sys = vd->sys;
++
++    sys->d2_render_target = NULL;
 +
 +    D2D1_PIXEL_FORMAT pf = {
 +        DXGI_FORMAT_B8G8R8A8_UNORM,
@@ -468,23 +457,28 @@ index 0000000..c04cdf6
 +        D2D1_PRESENT_OPTIONS_IMMEDIATELY /* this might need fiddling */
 +    };
 +
-+    HRESULT hr  = ID2D1Factory_CreateHwndRenderTarget(sys->p_d2_factory,
-+        &rtp, &hrtp, &sys->p_d2_render_target);
-+    if(hr != S_OK) {
++    HRESULT hr  = ID2D1Factory_CreateHwndRenderTarget(sys->d2_factory,
++                                                      &rtp,
++                                                      &hrtp,
++                                                      &sys->d2_render_target);
++    if (hr != S_OK) {
 +        msg_Err(vd, "Cannot create render target (hvideownd = 0x%x, width = %d, height = %d, pf.format = %d, hr = 0x%x)!",
-+            (uint32_t)hrtp.hwnd, hrtp.pixelSize.width, hrtp.pixelSize.height,
-+            pf.format, (uint32_t)hr);
++                (unsigned)hrtp.hwnd, hrtp.pixelSize.width,
++                hrtp.pixelSize.height, pf.format, (unsigned)hr);
 +
-+        D2D_DestroyRenderTarget(vd);
++        sys->d2_render_target = NULL;
++
++        return VLC_EGENERIC;
 +    }
 +
-+    ID2D1Factory_GetDesktopDpi(sys->p_d2_factory, &sys->f_d2_dpi_x,
-+        &sys->f_d2_dpi_y);
++    ID2D1Factory_GetDesktopDpi(sys->d2_factory,
++                               &sys->d2_dpi_x,
++                               &sys->d2_dpi_y);
 +
 +    D2D1_BITMAP_PROPERTIES bp = {
 +        pf,
-+        sys->f_d2_dpi_x,
-+        sys->f_d2_dpi_y
++        sys->d2_dpi_x,
++        sys->d2_dpi_y
 +    };
 +
 +    D2D1_SIZE_U bitmap_size = {
@@ -492,33 +486,62 @@ index 0000000..c04cdf6
 +        vd->fmt.i_height
 +    };
 +
-+    hr = ID2D1HwndRenderTarget_CreateBitmap(sys->p_d2_render_target,
-+        bitmap_size, NULL, 0, &bp, &sys->p_d2_bitmap);
++    hr = ID2D1HwndRenderTarget_CreateBitmap(sys->d2_render_target,
++                                            bitmap_size,
++                                            NULL,
++                                            0,
++                                            &bp,
++                                            &sys->d2_bitmap);
 +    if (hr != S_OK) {
-+        msg_Err(vd, "Failed to create bitmap (hr = 0x%x)!", (uint32_t)hr);
++        msg_Err(vd, "Failed to create bitmap (hr = 0x%x)!", (unsigned)hr);
++
++        sys->d2_bitmap = NULL;
++        D2D_DestroyRenderTarget(vd);
++
++        return VLC_EGENERIC;
 +    }
 +
 +#ifndef NDEBUG
 +    msg_Dbg(vd, "Render trgt dbg: dpi = %f, render_target = %p, bitmap = %p",
-+        sys->f_d2_dpi_x, sys->p_d2_render_target, sys->p_d2_bitmap);
++            sys->d2_dpi_x, sys->d2_render_target, sys->d2_bitmap);
 +#endif
++
++    return VLC_SUCCESS;
++}
++
++/**
++ * Resizes a ID2D1HWndRenderTarget
++ */
++static void D2D_ResizeRenderTarget(vout_display_t *vd)
++{
++    vout_display_sys_t *sys = vd->sys;
++
++    D2D1_SIZE_U size = {
++        sys->rect_dest.right - sys->rect_dest.left,
++        sys->rect_dest.bottom - sys->rect_dest.top
++    };
++
++    HRESULT hr  = ID2D1HwndRenderTarget_Resize(sys->d2_render_target, &size);
++    if (hr != S_OK)
++        msg_Err(vd, "Cannot resize render target (width = %d, height = %d, hr = 0x%x)!",
++                size.width, size.height, (unsigned)hr);
 +}
 +
 +/**
 + * Cleans up ID2D1HwndRenderTarget and ID2D1Bitmap
 + */
-+void D2D_DestroyRenderTarget(vout_display_t *vd)
++static void D2D_DestroyRenderTarget(vout_display_t *vd)
 +{
 +    vout_display_sys_t *sys = vd->sys;
 +
-+    if(sys->p_d2_render_target) {
-+        ID2D1HwndRenderTarget_Release(sys->p_d2_render_target);
-+        sys->p_d2_render_target = NULL;
++    if (sys->d2_render_target) {
++        ID2D1HwndRenderTarget_Release(sys->d2_render_target);
++        sys->d2_render_target = NULL;
 +    }
 +
-+    if (sys->p_d2_bitmap) {
-+        ID2D1Bitmap_Release(sys->p_d2_bitmap);
-+        sys->p_d2_bitmap = NULL;
++    if (sys->d2_bitmap) {
++        ID2D1Bitmap_Release(sys->d2_bitmap);
++        sys->d2_bitmap = NULL;
 +    }
 +
 +#ifndef NDEBUG
