@@ -1,6 +1,6 @@
-From 31a5b12f9000f7e11ad4a03f297c17b58ccdc9bc Mon Sep 17 00:00:00 2001
+From 65d7d9d812ccc8d802a73fd4ede9ee871857c1be Mon Sep 17 00:00:00 2001
 From: David Kaplan <david@2of1.org>
-Date: Fri, 23 Jul 2010 10:43:50 +0300
+Date: Sun, 25 Jul 2010 16:02:14 +0300
 Subject: [PATCH] Direct2D video output module
 
 Adds support for the D2D API on Win7/Vista SP2 with Platform Update
@@ -9,10 +9,10 @@ Requires d2d1 contrib headers
  configure.ac                        |   17 ++
  modules/video_output/msw/Modules.am |    8 +
  modules/video_output/msw/common.c   |    9 +-
- modules/video_output/msw/common.h   |    9 +
- modules/video_output/msw/direct2d.c |  422 +++++++++++++++++++++++++++++++++++
+ modules/video_output/msw/common.h   |    7 +
+ modules/video_output/msw/direct2d.c |  425 +++++++++++++++++++++++++++++++++++
  modules/video_output/msw/events.c   |    3 +
- 6 files changed, 465 insertions(+), 3 deletions(-)
+ 6 files changed, 466 insertions(+), 3 deletions(-)
  create mode 100644 modules/video_output/msw/direct2d.c
 
 diff --git a/configure.ac b/configure.ac
@@ -101,17 +101,15 @@ index 5704d5c..fddbd3d 100644
      rect_src_clipped.left &= ~1;
      rect_src_clipped.right &= ~1;
 diff --git a/modules/video_output/msw/common.h b/modules/video_output/msw/common.h
-index e023ef4..125fd65 100644
+index e023ef4..3a67c7d 100644
 --- a/modules/video_output/msw/common.h
 +++ b/modules/video_output/msw/common.h
-@@ -157,6 +157,15 @@ struct vout_display_sys_t
+@@ -157,6 +157,13 @@ struct vout_display_sys_t
      vout_display_opengl_t vgl;
  #endif
  
 +#ifdef MODULE_NAME_IS_direct2d
 +    HINSTANCE              d2_dll;            /* handle of the opened d2d1 dll */
-+    FLOAT                  d2_dpi_x;                                  /* DPI x */
-+    FLOAT                  d2_dpi_y;                                  /* DPI y */
 +    ID2D1Factory           *d2_factory;                         /* D2D factory */
 +    ID2D1HwndRenderTarget  *d2_render_target;          /* D2D rendering target */
 +    ID2D1Bitmap            *d2_bitmap;                            /* D2 bitmap */
@@ -122,10 +120,10 @@ index e023ef4..125fd65 100644
      /* show video on desktop window ? */
 diff --git a/modules/video_output/msw/direct2d.c b/modules/video_output/msw/direct2d.c
 new file mode 100644
-index 0000000..880c240
+index 0000000..f55b2c7
 --- /dev/null
 +++ b/modules/video_output/msw/direct2d.c
-@@ -0,0 +1,422 @@
+@@ -0,0 +1,425 @@
 +/*****************************************************************************
 + * direct2d.c : Direct2D video output plugin for vlc (Win7/Vista SP2 PF Update)
 + *****************************************************************************
@@ -175,10 +173,6 @@ index 0000000..880c240
 +#define GUID_EXT
 +DEFINE_GUID(IID_ID2D1Factory, 0x6152247, 0x6f50, 0x465a, 0x92, 0x45, 0x11, 0x8b, 0xfd, 0x3b, 0x60, 0x7);
 +
-+#ifndef WS_NONAVDONEBUTTON
-+#   define WS_NONAVDONEBUTTON 0
-+#endif
-+
 +/*****************************************************************************
 + * Module descriptor
 + *****************************************************************************/
@@ -193,7 +187,7 @@ index 0000000..880c240
 +    set_help(D2D_HELP)
 +    set_shortname("Direct2D")
 +    set_description(N_("Direct2D video output"))
-+    set_capability("vout display", 10)
++    set_capability("vout display", 60)
 +    add_shortcut("direct2d")
 +    set_callbacks(Open, Close)
 +vlc_module_end ()
@@ -273,7 +267,7 @@ index 0000000..880c240
 +    info.is_slow              = false;
 +    info.has_double_click     = true;
 +    info.has_hide_mouse       = true;
-+    info.has_pictures_invalid = true;
++    info.has_pictures_invalid = false;
 +    vd->info = info;
 +
 +    vd->fmt.i_chroma = VLC_CODEC_RGB32; /* masks change this to BGR32 for ID2D1Bitmap */
@@ -341,8 +335,7 @@ index 0000000..880c240
 +{
 +    vout_display_sys_t *sys = vd->sys;
 +
-+    if (sys->d2_render_target && sys->d2_bitmap)
-+    {
++    if (sys->d2_render_target && sys->d2_bitmap) {
 +        /* This seems unnecessary
 +        D2D1_RECT_U r_src = {
 +            sys->rect_src_clipped.left,
@@ -391,7 +384,13 @@ index 0000000..880c240
 +                                         D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
 +                                         NULL);
 +
-+        ID2D1HwndRenderTarget_EndDraw(sys->d2_render_target, NULL, NULL);
++        HRESULT hr = ID2D1HwndRenderTarget_EndDraw(sys->d2_render_target,
++                                                 NULL,
++                                                 NULL);
++        if (hr ==  D2DERR_RECREATE_TARGET) {
++            D2D_DestroyRenderTarget(vd);
++            D2D_CreateRenderTarget(vd);
++        }
 +    }
 +
 +    picture_Release(picture);
@@ -471,14 +470,16 @@ index 0000000..880c240
 +        return VLC_EGENERIC;
 +    }
 +
++    FLOAT dpi_x, dpi_y;
++
 +    ID2D1Factory_GetDesktopDpi(sys->d2_factory,
-+                               &sys->d2_dpi_x,
-+                               &sys->d2_dpi_y);
++                               &dpi_x,
++                               &dpi_y);
 +
 +    D2D1_BITMAP_PROPERTIES bp = {
 +        pf,
-+        sys->d2_dpi_x,
-+        sys->d2_dpi_y
++        dpi_x,
++        dpi_y
 +    };
 +
 +    D2D1_SIZE_U bitmap_size = {
@@ -503,7 +504,7 @@ index 0000000..880c240
 +
 +#ifndef NDEBUG
 +    msg_Dbg(vd, "Render trgt dbg: dpi = %f, render_target = %p, bitmap = %p",
-+            sys->d2_dpi_x, sys->d2_render_target, sys->d2_bitmap);
++            dpi_x, sys->d2_render_target, sys->d2_bitmap);
 +#endif
 +
 +    return VLC_SUCCESS;
