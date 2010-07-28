@@ -1,6 +1,6 @@
-From 65d7d9d812ccc8d802a73fd4ede9ee871857c1be Mon Sep 17 00:00:00 2001
+From 14e3cb23921038d66d6463e03573071f941a132b Mon Sep 17 00:00:00 2001
 From: David Kaplan <david@2of1.org>
-Date: Sun, 25 Jul 2010 16:02:14 +0300
+Date: Wed, 28 Jul 2010 06:26:37 +0300
 Subject: [PATCH] Direct2D video output module
 
 Adds support for the D2D API on Win7/Vista SP2 with Platform Update
@@ -10,9 +10,9 @@ Requires d2d1 contrib headers
  modules/video_output/msw/Modules.am |    8 +
  modules/video_output/msw/common.c   |    9 +-
  modules/video_output/msw/common.h   |    7 +
- modules/video_output/msw/direct2d.c |  425 +++++++++++++++++++++++++++++++++++
+ modules/video_output/msw/direct2d.c |  417 +++++++++++++++++++++++++++++++++++
  modules/video_output/msw/events.c   |    3 +
- 6 files changed, 466 insertions(+), 3 deletions(-)
+ 6 files changed, 458 insertions(+), 3 deletions(-)
  create mode 100644 modules/video_output/msw/direct2d.c
 
 diff --git a/configure.ac b/configure.ac
@@ -120,10 +120,10 @@ index e023ef4..3a67c7d 100644
      /* show video on desktop window ? */
 diff --git a/modules/video_output/msw/direct2d.c b/modules/video_output/msw/direct2d.c
 new file mode 100644
-index 0000000..f55b2c7
+index 0000000..aa4ede1
 --- /dev/null
 +++ b/modules/video_output/msw/direct2d.c
-@@ -0,0 +1,425 @@
+@@ -0,0 +1,417 @@
 +/*****************************************************************************
 + * direct2d.c : Direct2D video output plugin for vlc (Win7/Vista SP2 PF Update)
 + *****************************************************************************
@@ -187,7 +187,7 @@ index 0000000..f55b2c7
 +    set_help(D2D_HELP)
 +    set_shortname("Direct2D")
 +    set_description(N_("Direct2D video output"))
-+    set_capability("vout display", 60)
++    set_capability("vout display", 65)
 +    add_shortcut("direct2d")
 +    set_callbacks(Open, Close)
 +vlc_module_end ()
@@ -266,7 +266,7 @@ index 0000000..f55b2c7
 +    vout_display_info_t info = vd->info;
 +    info.is_slow              = false;
 +    info.has_double_click     = true;
-+    info.has_hide_mouse       = true;
++    info.has_hide_mouse       = false;
 +    info.has_pictures_invalid = false;
 +    vd->info = info;
 +
@@ -336,14 +336,6 @@ index 0000000..f55b2c7
 +    vout_display_sys_t *sys = vd->sys;
 +
 +    if (sys->d2_render_target && sys->d2_bitmap) {
-+        /* This seems unnecessary
-+        D2D1_RECT_U r_src = {
-+            sys->rect_src_clipped.left,
-+            sys->rect_src_clipped.top,
-+            sys->rect_src_clipped.right,
-+            sys->rect_src_clipped.bottom
-+        };
-+        */
 +
 +        HRESULT hr = ID2D1Bitmap_CopyFromMemory(sys->d2_bitmap,
 +                                                NULL /*&r_src*/,
@@ -385,8 +377,8 @@ index 0000000..f55b2c7
 +                                         NULL);
 +
 +        HRESULT hr = ID2D1HwndRenderTarget_EndDraw(sys->d2_render_target,
-+                                                 NULL,
-+                                                 NULL);
++                                                   NULL,
++                                                   NULL);
 +        if (hr ==  D2DERR_RECREATE_TARGET) {
 +            D2D_DestroyRenderTarget(vd);
 +            D2D_CreateRenderTarget(vd);
