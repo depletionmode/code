@@ -1,6 +1,6 @@
-From 14e3cb23921038d66d6463e03573071f941a132b Mon Sep 17 00:00:00 2001
+From 2e008b870892368deaab455139b949ce2390bfa4 Mon Sep 17 00:00:00 2001
 From: David Kaplan <david@2of1.org>
-Date: Wed, 28 Jul 2010 06:26:37 +0300
+Date: Wed, 28 Jul 2010 11:16:11 +0300
 Subject: [PATCH] Direct2D video output module
 
 Adds support for the D2D API on Win7/Vista SP2 with Platform Update
@@ -120,7 +120,7 @@ index e023ef4..3a67c7d 100644
      /* show video on desktop window ? */
 diff --git a/modules/video_output/msw/direct2d.c b/modules/video_output/msw/direct2d.c
 new file mode 100644
-index 0000000..aa4ede1
+index 0000000..11757bd
 --- /dev/null
 +++ b/modules/video_output/msw/direct2d.c
 @@ -0,0 +1,417 @@
@@ -271,9 +271,9 @@ index 0000000..aa4ede1
 +    vd->info = info;
 +
 +    vd->fmt.i_chroma = VLC_CODEC_RGB32; /* masks change this to BGR32 for ID2D1Bitmap */
-+    vd->fmt.i_rmask  = 0x000000ff;
-+    vd->fmt.i_gmask  = 0x0000ff00;
-+    vd->fmt.i_bmask  = 0x00000000;
++    vd->fmt.i_rmask  = 0x0000ff00;
++    vd->fmt.i_gmask  = 0x00ff0000;
++    vd->fmt.i_bmask  = 0xff000000;
 +
 +    vd->pool    = Pool;
 +    vd->prepare = Prepare;
