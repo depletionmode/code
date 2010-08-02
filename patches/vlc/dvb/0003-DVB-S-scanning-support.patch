@@ -1,0 +1,454 @@
+From 523d15c3adb8b4de73c5eda52851b3e28b2ca613 Mon Sep 17 00:00:00 2001
+From: David Kaplan <david@2of1.org>
+Date: Mon, 2 Aug 2010 16:59:59 +0300
+Subject: [PATCH 3/3] DVB-S scanning support
+
+DVB satellite scanning using transponder lists from the config directory
+---
+ modules/access/dvb/access.c |   48 ++++++++++++-
+ modules/access/dvb/scan.c   |  169 ++++++++++++++++++++++++++++++++++++++++++-
+ modules/access/dvb/scan.h   |   28 +++++++-
+ 3 files changed, 237 insertions(+), 8 deletions(-)
+
+diff --git a/modules/access/dvb/access.c b/modules/access/dvb/access.c
+index 4f3e171..c0b2024 100644
+--- a/modules/access/dvb/access.c
++++ b/modules/access/dvb/access.c
+@@ -1,12 +1,13 @@
+ /*****************************************************************************
+  * access.c: DVB card input v4l2 only
+  *****************************************************************************
+- * Copyright (C) 1998-2005 the VideoLAN team
++ * Copyright (C) 1998-2010 the VideoLAN team
+  *
+  * Authors: Johan Bilien <jobi@via.ecp.fr>
+  *          Jean-Paul Saman <jpsaman _at_ videolan _dot_ org>
+  *          Christophe Massiot <massiot@via.ecp.fr>
+  *          Laurent Aimar <fenrir@via.ecp.fr>
++ *          David Kaplan <david@2of1.org>
+  *
+  * This program is free software; you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License as published by
+@@ -37,6 +38,7 @@
+ #include <vlc_input.h>
+ #include <vlc_interface.h>
+ #include <vlc_dialog.h>
++#include <vlc_fs.h>
+ 
+ #ifdef HAVE_UNISTD_H
+ #   include <unistd.h>
+@@ -104,6 +106,9 @@ static void Close( vlc_object_t *p_this );
+ #define BUDGET_LONGTEXT N_("This allows you to stream an entire transponder with a \"budget\" card.")
+ 
+ /* Satellite */
++#define SATELLITE_TEXT N_("Satellite scanning config")
++#define SATELLITE_LONGTEXT N_("filename of config file in share/dvb/dvb-s")
++
+ #define SATNO_TEXT N_("Satellite number in the Diseqc system")
+ #define SATNO_LONGTEXT N_("[0=no diseqc, 1-4=satellite number].")
+ 
+@@ -211,6 +216,8 @@ vlc_module_begin ()
+     add_bool( "dvb-budget-mode", false, NULL, BUDGET_TEXT, BUDGET_LONGTEXT,
+               true )
+     /* DVB-S (satellite) */
++    add_string( "dvb-satellite", NULL, NULL, SATELLITE_TEXT, SATELLITE_LONGTEXT,
++                true )
+     add_integer( "dvb-satno", 0, NULL, SATNO_TEXT, SATNO_LONGTEXT,
+                  true )
+     add_integer( "dvb-voltage", 13, NULL, VOLTAGE_TEXT, VOLTAGE_LONGTEXT,
+@@ -564,6 +571,12 @@ static block_t *BlockScan( access_t *p_access )
+     scan_configuration_t cfg;
+     scan_session_t session;
+ 
++    if( p_scan->parameter.type == SCAN_DVB_S )
++        /* set satellite config file path */
++        strncpy( p_scan->parameter.sat_info.psz_name,
++                 var_GetString( p_access, "dvb-satellite" ),
++                 sizeof(p_scan->parameter.sat_info.psz_name) );
++
+     /* */
+     if( scan_Next( p_scan, &cfg ) )
+     {
+@@ -583,9 +596,25 @@ static block_t *BlockScan( access_t *p_access )
+         return NULL;
+ 
+     /* */
+-    msg_Dbg( p_access, "Scanning frequency %d", cfg.i_frequency );
++    if( p_scan->parameter.type == SCAN_DVB_S )
++    {
++        msg_Dbg( p_access,
++                 "Scanning frequency %d, symbol rate = %d, fec = %d",
++                 cfg.i_frequency,
++                 cfg.i_bandwidth,
++                 cfg.i_fec );
++    }
++    else
++        msg_Dbg( p_access, "Scanning frequency %d, bandwidth = %d",
++                 cfg.i_frequency,
++                 cfg.i_bandwidth );
++
+     var_SetInteger( p_access, "dvb-frequency", cfg.i_frequency );
+     var_SetInteger( p_access, "dvb-bandwidth", cfg.i_bandwidth );
++    if ( cfg.i_fec )
++        var_SetInteger( p_access, "dvb-fec", cfg.i_fec );
++    if ( cfg.c_polarization )
++        var_SetInteger( p_access, "dvb-voltage", cfg.c_polarization == 'H' ? 18 : 13 );
+ 
+     /* Setting frontend parameters for tuning the hardware */
+     if( FrontendSet( p_access ) < 0 )
+@@ -869,6 +898,7 @@ static void VarInit( access_t *p_access )
+     var_Create( p_access, "dvb-budget-mode", VLC_VAR_BOOL | VLC_VAR_DOINHERIT );
+ 
+     /* */
++    var_Create( p_access, "dvb-satellite", VLC_VAR_STRING | VLC_VAR_DOINHERIT );
+     var_Create( p_access, "dvb-satno", VLC_VAR_INTEGER | VLC_VAR_DOINHERIT );
+     var_Create( p_access, "dvb-voltage", VLC_VAR_INTEGER | VLC_VAR_DOINHERIT );
+     var_Create( p_access, "dvb-high-voltage", VLC_VAR_BOOL | VLC_VAR_DOINHERIT );
+@@ -926,6 +956,18 @@ static int ParseMRL( access_t *p_access )
+         var_Set( p_access, "dvb-" option, val );                            \
+     }
+ 
++#define GET_OPTION_STRING( option )                                         \
++    if ( !strncmp( psz_parser, option "=", strlen( option "=" ) ) )         \
++    {                                                                       \
++        psz_parser += strlen( option "=" );                                 \
++        val.psz_string = psz_parser;                                        \
++        char *p_save;                                                       \
++        char *tok = strtok_r(val.psz_string, ":", &p_save);                 \
++        val.psz_string[tok - val.psz_string - 1] = 0;                       \
++        var_Set( p_access, "dvb-" option, val );                            \
++        psz_parser += strlen( val.psz_string );                             \
++    }
++
+     /* Test for old syntax */
+     strtol( psz_parser, &psz_next, 10 );
+     if( psz_next != psz_parser )
+@@ -948,6 +990,7 @@ static int ParseMRL( access_t *p_access )
+         else GET_OPTION_BOOL("probe")
+         else GET_OPTION_BOOL("budget-mode")
+ 
++        else GET_OPTION_STRING("satellite")
+         else GET_OPTION_INT("voltage")
+         else GET_OPTION_BOOL("high-voltage")
+         else GET_OPTION_INT("tone")
+@@ -999,6 +1042,7 @@ static int ParseMRL( access_t *p_access )
+     }
+ #undef GET_OPTION_INT
+ #undef GET_OPTION_BOOL
++#undef GET_OPTION_STRING
+ 
+     free( psz_dup );
+     return VLC_SUCCESS;
+diff --git a/modules/access/dvb/scan.c b/modules/access/dvb/scan.c
+index cd855ed..9165524 100644
+--- a/modules/access/dvb/scan.c
++++ b/modules/access/dvb/scan.c
+@@ -1,9 +1,10 @@
+ /*****************************************************************************
+  * scan.c: DVB scanner helpers
+  *****************************************************************************
+- * Copyright (C) 2008 the VideoLAN team
++ * Copyright (C) 2008,2010 the VideoLAN team
+  *
+  * Authors: Laurent Aimar <fenrir@videolan.org>
++ *          David Kaplan <david@2of1.org>
+  *
+  * This program is free software; you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License as published by
+@@ -31,6 +32,7 @@
+ #include <vlc_plugin.h>
+ #include <vlc_access.h>
+ #include <vlc_dialog.h>
++#include <vlc_fs.h>
+ 
+ #ifdef HAVE_UNISTD_H
+ #   include <unistd.h>
+@@ -116,10 +118,17 @@ int scan_Init( vlc_object_t *p_obj, scan_t *p_scan, const scan_parameter_t *p_pa
+                  p_parameter->bandwidth.i_min, p_parameter->bandwidth.i_max );
+         msg_Dbg( p_obj, " - exhaustive mode %s", p_parameter->b_exhaustive ? "on" : "off" );
+     }
++    else if( p_parameter->type == SCAN_DVB_S )
++    {
++        msg_Dbg( p_obj, "DVB-S scanning:" );
++        msg_Dbg( p_obj, " - satellite [%s]", p_parameter->sat_info.psz_name );
++    }
+     else
+     {
+         return VLC_EGENERIC;
+     }
++    msg_Dbg( p_obj, " - use NIT %s", p_parameter->b_use_nit ? "on" : "off" );
++    msg_Dbg( p_obj, " - FTA only %s", p_parameter->b_free_only ? "on" : "off" );
+ 
+     p_scan->p_obj = VLC_OBJECT(p_obj);
+     p_scan->i_index = 0;
+@@ -130,6 +139,7 @@ int scan_Init( vlc_object_t *p_obj, scan_t *p_scan, const scan_parameter_t *p_pa
+ 
+     return VLC_SUCCESS;
+ }
++
+ void scan_Clean( scan_t *p_scan )
+ {
+     if( p_scan->p_dialog != NULL )
+@@ -140,6 +150,142 @@ void scan_Clean( scan_t *p_scan )
+     TAB_CLEAN( p_scan->i_service, p_scan->pp_service );
+ }
+ 
++static int ScanDvbSNextFast( scan_t *p_scan, scan_configuration_t *p_cfg, double *pf_pos )
++{
++    msg_Dbg( p_scan->p_obj, "Scan index %"PRId64, p_scan->i_index );
++
++    int *pi_count = &p_scan->parameter.sat_info.i_count;
++
++    /* if there are no transponders in mem, laod from config file */
++    if( !*pi_count )
++    {
++        scan_dvbs_transponder_t *p_transponders = malloc( sizeof( scan_dvbs_transponder_t ) );
++
++        DIR *p_dir;
++
++        char *psz_dir = NULL;
++        char *data_dir = config_GetDataDir( p_scan->p_obj );
++
++        if( asprintf( &psz_dir, "%s" DIR_SEP "dvb" DIR_SEP "dvb-s", data_dir ) == -1 )
++            psz_dir = NULL;
++        free( data_dir );
++
++        if( !psz_dir )
++            return VLC_EGENERIC;
++
++        /* open config directory */
++        if( !( p_dir = vlc_opendir( psz_dir ) ) )
++        {
++            msg_Err( p_scan->p_obj, "could not open satellite info directory (%s)", psz_dir );
++            return VLC_EGENERIC;
++        }
++
++        /* find the requested file in the directory */
++        for( ; ; ) {
++            char *psz_filename;
++
++            if( ! (psz_filename = vlc_readdir( p_dir ) ) )
++                break;
++
++            if( !strncmp( p_scan->parameter.sat_info.psz_name, psz_filename, 20 ) )
++            {
++                if( asprintf( &p_scan->parameter.sat_info.psz_path, "%s" DIR_SEP "%s", psz_dir, psz_filename ) == -1 )
++                    p_scan->parameter.sat_info.psz_path = NULL;
++
++                free( psz_filename );
++                break;
++            }
++        }
++
++        closedir( p_dir );
++
++        if( !p_scan->parameter.sat_info.psz_path )
++        {
++            msg_Err( p_scan->p_obj, "could not find satellite config (%s)", p_scan->parameter.sat_info.psz_name );
++            return VLC_EGENERIC;
++        }
++
++        msg_Dbg( p_scan->p_obj, "using satellite config file (%s)", p_scan->parameter.sat_info.psz_path );
++
++        FILE *f = vlc_fopen( p_scan->parameter.sat_info.psz_path, "r" );
++
++        /* parse file */
++        if( f )
++        {
++            char type;
++            char psz_fec[3];
++
++            int res;
++            do
++            {
++                if ( ( res = fscanf( f, "%c %d %c %d %s\n",
++                            &type,
++                            &p_transponders[*pi_count].i_frequency,
++                            &p_transponders[*pi_count].c_polarization,
++                            &p_transponders[*pi_count].i_symbol_rate,
++                            psz_fec ) ) != 5 )
++                {
++                    msg_Dbg( p_scan->p_obj, "error parsing transponder from file" );
++                    continue;
++                }
++
++                /* decode fec */
++                char psz_fec_list[] = "1/22/33/44/55/66/77/88/9";
++                char *p_fec = strstr( psz_fec_list, psz_fec );
++                if ( !p_fec )
++                    p_transponders[*pi_count].i_fec = 9;    /* FEC_AUTO */
++                else
++                    p_transponders[*pi_count].i_fec = 1 + ( ( p_fec-psz_fec_list ) / 3 );
++
++                (*pi_count)++;
++
++                p_transponders = realloc(p_transponders, ( *pi_count + 1 ) * sizeof( scan_dvbs_transponder_t ) );
++            } while (res != EOF);
++
++            msg_Dbg( p_scan->p_obj, "parsed %d transponders from config", *pi_count);
++
++            fclose( f );
++        }
++        else
++        {
++            msg_Err( p_scan->p_obj, "failed to open satellite file (%s)", p_scan->parameter.sat_info.psz_path );
++            return VLC_EGENERIC;
++        }
++
++        p_scan->parameter.sat_info.p_transponders = p_transponders;
++    }
++
++    if( p_scan->i_index < *pi_count )
++    {
++        /* setup params for scan */
++        p_cfg->i_bandwidth = p_scan->parameter.sat_info.p_transponders[p_scan->i_index].i_symbol_rate / 1000;
++        p_cfg->i_frequency = p_scan->parameter.sat_info.p_transponders[p_scan->i_index].i_frequency;
++        p_cfg->i_fec = p_scan->parameter.sat_info.p_transponders[p_scan->i_index].i_fec;
++        p_cfg->c_polarization = p_scan->parameter.sat_info.p_transponders[p_scan->i_index].c_polarization;
++
++        msg_Dbg( p_scan->p_obj,
++                 "transponder [%d/%d]: frequency=%d, symbolrate=%d, fec=%d, polarization=%c",
++                 p_scan->i_index + 1,
++                 *pi_count,
++                 p_cfg->i_frequency,
++                 p_cfg->i_bandwidth,
++                 p_cfg->i_fec,
++                 p_cfg->c_polarization );
++
++        *pf_pos = (double)p_scan->i_index / *pi_count;
++
++        return VLC_SUCCESS;
++    }
++
++    if( p_scan->parameter.sat_info.p_transponders )
++    {
++        free( p_scan->parameter.sat_info.p_transponders );
++        p_scan->parameter.sat_info.p_transponders = NULL;
++    }
++
++    return VLC_EGENERIC;
++}
++
+ static int ScanDvbCNextFast( scan_t *p_scan, scan_configuration_t *p_cfg, double *pf_pos )
+ {
+     msg_Dbg( p_scan->p_obj, "Scan index %"PRId64, p_scan->i_index );
+@@ -280,6 +426,14 @@ static int ScanDvbTNext( scan_t *p_scan, scan_configuration_t *p_cfg, double *pf
+         return ScanDvbTNextFast( p_scan, p_cfg, pf_pos );
+ }
+ 
++static int ScanDvbSNext( scan_t *p_scan, scan_configuration_t *p_cfg, double *pf_pos )
++{
++    if( p_scan->parameter.b_exhaustive )
++        msg_Dbg( p_scan->p_obj, "no exhaustive svb-d scan mode" );
++
++    return ScanDvbSNextFast( p_scan, p_cfg, pf_pos );
++}
++
+ int scan_Next( scan_t *p_scan, scan_configuration_t *p_cfg )
+ {
+     double f_position;
+@@ -297,6 +451,9 @@ int scan_Next( scan_t *p_scan, scan_configuration_t *p_cfg )
+     case SCAN_DVB_C:
+         i_ret = ScanDvbCNext( p_scan, p_cfg, &f_position );
+         break;
++    case SCAN_DVB_S:
++        i_ret = ScanDvbSNext( p_scan, p_cfg, &f_position );
++        break;
+     default:
+         i_ret = VLC_EGENERIC;
+         break;
+@@ -789,14 +946,20 @@ block_t *scan_GetM3U( scan_t *p_scan )
+                   s->i_network_id, s->i_nit_version, s->i_sdt_version,
+                   s->cfg.i_frequency, s->cfg.i_bandwidth, s->i_snr );
+ 
++        if( !s->cfg.i_fec )
++            s->cfg.i_fec = 9;   /* FEC_AUTO */
++
+         char *psz;
+         if( asprintf( &psz, "#EXTINF:,,%s\n"
+                         "#EXTVLCOPT:program=%d\n"
+-                        "dvb://frequency=%d:bandwidth=%d\n"
++                        "dvb://frequency=%d:bandwidth=%d:voltage=%d:fec=%d\n"
+                         "\n",
+                       s->psz_name && * s->psz_name ? s->psz_name : "Unknown",
+                       s->i_program,
+-                      s->cfg.i_frequency, s->cfg.i_bandwidth ) < 0 )
++                      s->cfg.i_frequency,
++                      s->cfg.i_bandwidth,
++                      s->cfg.c_polarization == 'H' ? 18 : 13,
++                      s->cfg.i_fec ) < 0 )
+             psz = NULL;
+         if( psz )
+         {
+diff --git a/modules/access/dvb/scan.h b/modules/access/dvb/scan.h
+index d8e8c2a..33333f5 100644
+--- a/modules/access/dvb/scan.h
++++ b/modules/access/dvb/scan.h
+@@ -1,9 +1,10 @@
+ /*****************************************************************************
+  * scan.h : functions to ease DVB scanning
+  *****************************************************************************
+- * Copyright (C) 2008 the VideoLAN team
++ * Copyright (C) 2008,2010 the VideoLAN team
+  *
+  * Authors: Laurent Aimar <fenrir@videolan.org>
++ *          David Kaplan <david@2of1.org>
+  *
+  * This program is free software; you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License as published by
+@@ -46,8 +47,19 @@ typedef enum
+ 
+ typedef struct
+ {
++    int i_frequency;
++    int i_symbol_rate;
++    int i_fec;
++    char c_polarization;
++} scan_dvbs_transponder_t;
++
++typedef struct
++{
+     scan_type_t type;
+     bool b_exhaustive;
++    bool b_use_nit;
++    bool b_free_only;
++
+     struct
+     {
+         int i_min;
+@@ -67,12 +79,23 @@ typedef struct
+         int i_count;
+     } bandwidth;
+ 
++    struct
++    {
++        char psz_name[20];      /* satellite name */
++        char *psz_path;         /* config file path */
++
++        scan_dvbs_transponder_t *p_transponders;
++        int i_count;
++    } sat_info;
++
+ } scan_parameter_t;
+ 
+ typedef struct
+ {
+     int i_frequency;
+-    int i_bandwidth;
++    int i_bandwidth;        /* or symbol rate */
++    int i_fec;
++    char c_polarization;
+ } scan_configuration_t;
+ 
+ typedef enum
+@@ -95,7 +118,6 @@ typedef struct
+     int  i_channel;     /* -1 if unknown */
+     bool b_crypted;     /* True if potentially crypted */
+ 
+-
+     int i_network_id;
+ 
+     int i_nit_version;
+-- 
+1.7.0.4
+

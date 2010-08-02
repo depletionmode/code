@@ -1,0 +1,73 @@
+From 98f6cdc00a2258ba7382a748b8b441edd67ab04b Mon Sep 17 00:00:00 2001
+From: David Kaplan <david@2of1.org>
+Date: Mon, 2 Aug 2010 16:46:20 +0300
+Subject: [PATCH 2/3] DVB access module format improvements
+
+ScanDvbTNextExhaustive() -> ScanDvbNextExhaustive() as is used for both DVB-T/C
+Various code format improvements
+---
+ modules/access/dvb/dvb.h       |    2 +-
+ modules/access/dvb/linux_dvb.c |    2 +-
+ modules/access/dvb/scan.c      |    6 +++---
+ 3 files changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/modules/access/dvb/dvb.h b/modules/access/dvb/dvb.h
+index 5e626b2..bf059d0 100644
+--- a/modules/access/dvb/dvb.h
++++ b/modules/access/dvb/dvb.h
+@@ -182,7 +182,7 @@ struct access_sys_t
+     vlc_mutex_t         httpd_mutex;
+     vlc_cond_t          httpd_cond;
+     mtime_t             i_httpd_timeout;
+-    bool          b_request_frontend_info, b_request_mmi_info;
++    bool                b_request_frontend_info, b_request_mmi_info;
+     char                *psz_frontend_info, *psz_mmi_info;
+     char                *psz_request;
+ #endif
+diff --git a/modules/access/dvb/linux_dvb.c b/modules/access/dvb/linux_dvb.c
+index e646686..2967a01 100644
+--- a/modules/access/dvb/linux_dvb.c
++++ b/modules/access/dvb/linux_dvb.c
+@@ -759,7 +759,7 @@ static fe_spectral_inversion_t DecodeInversion( access_t *p_access )
+ 
+ static fe_code_rate_t DecodeFEC( access_t *p_access, int i_val )
+ {
+-    fe_code_rate_t      fe_fec = FEC_NONE;
++    fe_code_rate_t fe_fec = FEC_NONE;
+ 
+     msg_Dbg( p_access, "using fec=%d", i_val );
+ 
+diff --git a/modules/access/dvb/scan.c b/modules/access/dvb/scan.c
+index 5ee7be9..cd855ed 100644
+--- a/modules/access/dvb/scan.c
++++ b/modules/access/dvb/scan.c
+@@ -177,7 +177,7 @@ static int ScanDvbCNextFast( scan_t *p_scan, scan_configuration_t *p_cfg, double
+     return VLC_EGENERIC;
+ }
+ 
+-static int ScanDvbTNextExhaustive( scan_t *p_scan, scan_configuration_t *p_cfg, double *pf_pos )
++static int ScanDvbNextExhaustive( scan_t *p_scan, scan_configuration_t *p_cfg, double *pf_pos )
+ {
+     if( p_scan->i_index > p_scan->parameter.frequency.i_count * p_scan->parameter.bandwidth.i_count )
+         return VLC_EGENERIC;
+@@ -267,7 +267,7 @@ static int ScanDvbTNextFast( scan_t *p_scan, scan_configuration_t *p_cfg, double
+ static int ScanDvbCNext( scan_t *p_scan, scan_configuration_t *p_cfg, double *pf_pos )
+ {
+     if( p_scan->parameter.b_exhaustive )
+-        return ScanDvbTNextExhaustive( p_scan, p_cfg, pf_pos );
++        return ScanDvbNextExhaustive( p_scan, p_cfg, pf_pos );
+     else
+         return ScanDvbCNextFast( p_scan, p_cfg, pf_pos );
+ }
+@@ -275,7 +275,7 @@ static int ScanDvbCNext( scan_t *p_scan, scan_configuration_t *p_cfg, double *pf
+ static int ScanDvbTNext( scan_t *p_scan, scan_configuration_t *p_cfg, double *pf_pos )
+ {
+     if( p_scan->parameter.b_exhaustive )
+-        return ScanDvbTNextExhaustive( p_scan, p_cfg, pf_pos );
++        return ScanDvbNextExhaustive( p_scan, p_cfg, pf_pos );
+     else
+         return ScanDvbTNextFast( p_scan, p_cfg, pf_pos );
+ }
+-- 
+1.7.0.4
+
