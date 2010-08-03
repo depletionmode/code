@@ -1,7 +1,7 @@
-From 98f6cdc00a2258ba7382a748b8b441edd67ab04b Mon Sep 17 00:00:00 2001
+From d58bac8d8ccd8596bc745b6f17e4227e1f848531 Mon Sep 17 00:00:00 2001
 From: David Kaplan <david@2of1.org>
 Date: Mon, 2 Aug 2010 16:46:20 +0300
-Subject: [PATCH 2/3] DVB access module format improvements
+Subject: [PATCH 2/4] DVB access module format improvements
 
 ScanDvbTNextExhaustive() -> ScanDvbNextExhaustive() as is used for both DVB-T/C
 Various code format improvements
